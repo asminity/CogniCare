@@ -53,6 +53,7 @@ class PolicyRule(Base):
     source_text: Mapped[str] = mapped_column(Text, nullable=False)
     confidence: Mapped[float] = mapped_column(nullable=False)
     policy: Mapped["Policy"] = relationship(back_populates="rules")
+    shocks: Mapped[list["PolicyShock"]] = relationship(back_populates="policy_rule")
 
 
 class Hospital(Base):
@@ -65,6 +66,7 @@ class Hospital(Base):
     longitude: Mapped[float] = mapped_column(nullable=False)
     network_names: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     services: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    demo_costs_cents: Mapped[dict[str, int]] = mapped_column(JSON, default=dict, nullable=False)
     emergency_capable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     recommendations: Mapped[list["Recommendation"]] = relationship(back_populates="hospital")
 
@@ -104,14 +106,17 @@ class PolicyShock(Base):
     policy_id: Mapped[int] = mapped_column(ForeignKey("policies.id", ondelete="CASCADE"), nullable=False)
     journey_id: Mapped[int | None] = mapped_column(ForeignKey("care_journeys.id", ondelete="SET NULL"))
     event_id: Mapped[int | None] = mapped_column(ForeignKey("care_events.id", ondelete="SET NULL"))
+    policy_rule_id: Mapped[int | None] = mapped_column(ForeignKey("policy_rules.id", ondelete="SET NULL"))
     severity: Mapped[str] = mapped_column(String(30), nullable=False)
     title: Mapped[str] = mapped_column(String(180), nullable=False)
     explanation: Mapped[str] = mapped_column(Text, nullable=False)
     resolved: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    next_action: Mapped[str] = mapped_column(Text, nullable=False, default="Review this care event with the insurer.")
     patient: Mapped["Patient"] = relationship(back_populates="shocks")
     policy: Mapped["Policy"] = relationship(back_populates="shocks")
     journey: Mapped["CareJourney"] = relationship(back_populates="shocks")
     event: Mapped["CareEvent | None"] = relationship(back_populates="shocks")
+    policy_rule: Mapped["PolicyRule | None"] = relationship(back_populates="shocks")
 
 
 class Simulation(Base):
