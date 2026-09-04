@@ -91,7 +91,7 @@ def compatibility_options(db: Session = Depends(get_db)) -> dict:
     return {
         "patients": [{"id": item.id, "name": item.full_name, "diagnosis": item.diagnosis} for item in db.scalars(select(Patient).order_by(Patient.full_name))],
         "policies": [{"id": item.id, "name": f"{item.provider_name} - {item.plan_name}", "network_name": item.network_name} for item in db.scalars(select(Policy).order_by(Policy.plan_name))],
-        "hospitals": [{"id": item.id, "name": item.name, "city": item.city, "services": item.services} for item in db.scalars(select(Hospital).order_by(Hospital.name))],
+        "hospitals": [{"id": item.id, "name": item.name, "city": item.city, "services": item.services, "latitude": item.latitude, "longitude": item.longitude, "emergency_capable": item.emergency_capable} for item in db.scalars(select(Hospital).order_by(Hospital.name))],
     }
 
 
