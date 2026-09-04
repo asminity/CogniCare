@@ -1,6 +1,6 @@
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile, status
 from datetime import date
 
 from pydantic import BaseModel, Field
@@ -8,13 +8,14 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.db.models import CareEvent, CareJourney, Hospital, Patient, Policy, PolicyRule, PolicyShock, Simulation
+from app.db.models import CareEvent, CareJourney, Hospital, IngestionJob, Patient, PatientDocument, Policy, PolicyRule, PolicyShock, Simulation
 from app.db.session import get_db
 from app.services.compatibility import calculate_compatibility
 from app.services.policy_shocks import detect_policy_shocks
 from app.services.simulation import simulate_pathway
 from app.services.copilot import answer_with_cognicare_data, explain_recommendation, retrieve_cognicare_context
 from app.services.policy_extraction import PolicyExtractionError, extract_policy_rules
+from app.services.ingestion import ensure_demo_patient, hash_upload, process_ingestion
 
 router = APIRouter(prefix="/api")
 
@@ -75,6 +76,81 @@ class CopilotRequest(BaseModel):
 @router.get("/health")
 def health_check() -> dict[str, str]:
     return {"status": "ok"}
+
+
+def _ingestion_payload(job: IngestionJob) -> dict:
+    return {
+        "id": job.id,
+        "filename": job.filename,
+        "status": job.status,
+        "stage": job.stage,
+        "progress": job.progress,
+        "document_type": job.document_type,
+        "patient": {"id": "CG-DEMO-001", "name": "Ananya Sharma", "city": "Nagpur"},
+        "document_id": job.document_id,
+        "extracted_fields": job.extracted_fields,
+        "care_events_updated": job.care_events_updated,
+        "error": job.error,
+        "created_at": job.created_at,
+        "completed_at": job.completed_at,
+    }
+
+
+@router.post("/ingestion/upload", status_code=status.HTTP_202_ACCEPTED)
+async def upload_ingestion(background_tasks: BackgroundTasks, document: UploadFile = File(...), db: Session = Depends(get_db)) -> dict:
+    if not document.filename:
+        raise HTTPException(status_code=422, detail="Choose a file to import.")
+    payload = await document.read()
+    if not payload:
+        raise HTTPException(status_code=422, detail="The selected file is empty.")
+    if len(payload) > 15 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Files must be 15 MB or smaller.")
+    patient = ensure_demo_patient(db)
+    content_hash = hash_upload(payload)
+    existing = db.scalar(select(PatientDocument).where(PatientDocument.patient_id == patient.id, PatientDocument.content_hash == content_hash))
+    job = IngestionJob(patient_id=patient.id, document_id=existing.id if existing else None, filename=document.filename, content_type=document.content_type or "application/octet-stream", content_hash=content_hash, status="QUEUED", stage="UPLOADING", progress=5, document_type="OTHER")
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    if existing:
+        job.status = "COMPLETED"
+        job.stage = "COMPLETED"
+        job.progress = 100
+        job.error = "Document already exists; existing record reused."
+        db.commit()
+    elif background_tasks is not None:
+        background_tasks.add_task(process_ingestion, job.id, payload)
+    return _ingestion_payload(job)
+
+
+@router.get("/ingestion/{job_id}")
+def get_ingestion_job(job_id: int, db: Session = Depends(get_db)) -> dict:
+    job = db.get(IngestionJob, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Ingestion job was not found.")
+    return _ingestion_payload(job)
+
+
+@router.get("/ingestion")
+def list_ingestion_jobs(db: Session = Depends(get_db)) -> dict:
+    jobs = db.scalars(select(IngestionJob).order_by(IngestionJob.id.desc())).all()
+    return {"jobs": [_ingestion_payload(job) for job in jobs]}
+
+
+@router.get("/patients/{patient_id}")
+def get_patient_record(patient_id: int, db: Session = Depends(get_db)) -> dict:
+    patient = db.get(Patient, patient_id)
+    if not patient:
+        raise HTTPException(status_code=404, detail="Patient record was not found.")
+    return {"id": patient.id, "patient_id": patient.care_needs.get("demo_patient_id"), "name": patient.full_name, "diagnosis": patient.diagnosis, "care_needs": patient.care_needs, "documents": len(patient.documents), "journeys": len(patient.journeys)}
+
+
+@router.get("/patients/{patient_id}/documents")
+def list_patient_documents(patient_id: int, db: Session = Depends(get_db)) -> dict:
+    patient = db.get(Patient, patient_id)
+    if not patient:
+        raise HTTPException(status_code=404, detail="Patient record was not found.")
+    return {"patient": {"id": "CG-DEMO-001", "name": patient.full_name}, "documents": [{"id": item.id, "filename": item.filename, "document_type": item.document_type, "status": item.status, "size_bytes": item.size_bytes, "uploaded_at": item.uploaded_at, "extraction_summary": item.extraction_summary} for item in sorted(patient.documents, key=lambda item: item.id, reverse=True)]}
 
 
 def _load_inputs(request: CompatibilityRequest, db: Session) -> tuple[Patient, Policy, Hospital]:

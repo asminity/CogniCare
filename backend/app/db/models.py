@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from typing import Any
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, JSON, String, Text, func
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -19,6 +19,46 @@ class Patient(Base):
     simulations: Mapped[list["Simulation"]] = relationship(back_populates="patient", cascade="all, delete-orphan")
     recommendations: Mapped[list["Recommendation"]] = relationship(back_populates="patient", cascade="all, delete-orphan")
     shocks: Mapped[list["PolicyShock"]] = relationship(back_populates="patient", cascade="all, delete-orphan")
+    documents: Mapped[list["PatientDocument"]] = relationship(back_populates="patient", cascade="all, delete-orphan")
+    ingestion_jobs: Mapped[list["IngestionJob"]] = relationship(back_populates="patient", cascade="all, delete-orphan")
+
+
+class PatientDocument(Base):
+    __tablename__ = "patient_documents"
+    __table_args__ = (UniqueConstraint("patient_id", "content_hash", name="uq_patient_document_hash"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    patient_id: Mapped[int] = mapped_column(ForeignKey("patients.id", ondelete="CASCADE"), nullable=False)
+    filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    content_type: Mapped[str] = mapped_column(String(160), nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    document_type: Mapped[str] = mapped_column(String(50), nullable=False, default="OTHER")
+    status: Mapped[str] = mapped_column(String(40), nullable=False, default="PROCESSED")
+    extraction_summary: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    uploaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    patient: Mapped["Patient"] = relationship(back_populates="documents")
+    ingestion_jobs: Mapped[list["IngestionJob"]] = relationship(back_populates="document")
+
+
+class IngestionJob(Base):
+    __tablename__ = "ingestion_jobs"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    patient_id: Mapped[int] = mapped_column(ForeignKey("patients.id", ondelete="CASCADE"), nullable=False)
+    document_id: Mapped[int | None] = mapped_column(ForeignKey("patient_documents.id", ondelete="SET NULL"))
+    filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    content_type: Mapped[str] = mapped_column(String(160), nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="QUEUED")
+    stage: Mapped[str] = mapped_column(String(40), nullable=False, default="UPLOADING")
+    progress: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    document_type: Mapped[str] = mapped_column(String(50), nullable=False, default="OTHER")
+    extracted_fields: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    care_events_updated: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    patient: Mapped["Patient"] = relationship(back_populates="ingestion_jobs")
+    document: Mapped["PatientDocument | None"] = relationship(back_populates="ingestion_jobs")
 
 
 class Policy(Base):
